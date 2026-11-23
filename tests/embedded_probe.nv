@@ -1,0 +1,105 @@
+// embedded_probe.nv — this package's device claim, as a program that
+// either builds for a Cortex-M or does not.
+//
+// It is not a test.  `scripts/shard_audit.sh`'s `core-embedded` row
+// copies it and the modules it names into a package of its own and
+// runs
+//
+//   novo build --target=nrf52-qemu src/probe.nv
+//
+// which produces a real Cortex-M4 ELF or fails.  `--target=nrf52-qemu`
+// stamps `@tier(embedded)` on every function it compiles, so the build
+// refuses an allocation, a list literal, an unbounded `while` and a
+// libm call wherever one is.
+//
+// WHAT THE CLAIM COVERS: every module of the package.  The probe
+// samples a pair of 16-bit counters across the wrap, drives a straight
+// line and a quarter circle, turns a velocity command into wheel speeds
+// under limits, and folds every answer into one number so a single
+// comparison decides the run.
+
+use odometry
+use odotrig
+
+@tier(embedded)
+fn near(a: fp32, b: fp32, tol: fp32) -> Bool
+    let d = a - b
+    d <= tol and d >= -tol
+
+@tier(embedded)
+fn score() -> Int
+    var n = 0
+    let tol: fp32 = 0.001
+    let p = odometry.params(0.05, 0.2, 1000)
+
+    // A counter that crosses its wrap reads a small step.
+    if odometry.tick_delta(65530, 4, 65536) == 10
+        n = n + 1
+    if odometry.tick_delta(4, 65530, 65536) == -10
+        n = n + 1
+    if odometry.ticks_for(p, odometry.distance(p, 1000)) == 1000
+        n = n + 1
+
+    // Straight: 1000 ticks of each wheel is one wheel circumference.
+    var o = odometry.odometer(p, 16)
+    o = odometry.update(o, 65000, 100, 0.1)
+    o = odometry.update(o, 464, 1100, 0.1)
+    if near(o.pose.x, 0.31415927, tol)
+        n = n + 1
+
+    var s = odometry.odometer(p, 16)
+    s = odometry.update(s, 0, 0, 0.1)
+    s = odometry.update(s, 1000, 1000, 0.1)
+    if near(s.pose.x, 0.31415927, tol) and near(s.pose.y, 0.0, tol)
+        n = n + 1
+    if near(s.twist.v, 3.1415927, tol) and near(s.twist.w, 0.0, tol)
+        n = n + 1
+
+    // A spin on the spot turns without moving.
+    var r = odometry.odometer(p, 0)
+    r = odometry.update(r, 0, 0, 0.1)
+    r = odometry.update(r, -500, 500, 0.1)
+    if near(r.pose.x, 0.0, tol) and near(r.pose.y, 0.0, tol) and near(r.pose.theta, 1.5707964, tol)
+        n = n + 1
+
+    // The arc of unequal wheels.
+    let a = odometry.advance(odometry.pose(0.0, 0.0, 0.0), 0.1, 0.2, 0.2)
+    if a.theta > 0.49 and a.theta < 0.51
+        n = n + 1
+
+    // A command under limits.
+    let lim = odometry.limits(1.0, 2.0, 40.0)
+    let w = odometry.wheel_speeds(p, odometry.twist(0.5, 1.0), lim)
+    if near(w.right - w.left, 4.0, tol)
+        n = n + 1
+    let clipped = odometry.wheel_speeds(p, odometry.twist(5.0, 0.0), lim)
+    if near(clipped.left, 20.0, tol)
+        n = n + 1
+    let scaled = odometry.wheel_speeds(p, odometry.twist(1.0, 2.0), odometry.limits(1.0, 2.0, 10.0))
+    if near(scaled.right, 10.0, tol)
+        n = n + 1
+    let back = odometry.twist_of_wheels(p, w)
+    if near(back.w, 1.0, tol)
+        n = n + 1
+    let t = odometry.ticks_per_second(p, w)
+    if t.right > t.left
+        n = n + 1
+    if near(odotrig.sin(0.5) * odotrig.sin(0.5) + odotrig.cos(0.5) * odotrig.cos(0.5), 1.0, tol)
+        n = n + 1
+    if near(odotrig.wrap_pi(7.0), 0.7168147, tol)
+        n = n + 1
+    n
+
+@tier(rt)
+fn main() [hw, time]
+    bsp.board.init()
+    // 15 is the number of checks `score` makes on the path a linked
+    // build takes.  A mismatch prints FAIL, and the device's count is
+    // what a bisect starts from.
+    let n = score()
+    if n == 15
+        hal.uart.write("PASS: odometry-embedded\n")
+    else
+        hal.uart.write("FAIL: odometry-embedded\n")
+    loop
+        core.rt.sleep_ms(1000)

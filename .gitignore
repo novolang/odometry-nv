@@ -1,0 +1,14 @@
+# Build outputs.
+_novo/
+
+# The generated API page.  `novo doc` writes it here so you can read
+# what the registry will serve; the registry gets its own copy, uploaded
+# beside the archive by `novo pkg publish`.  It is generated from the
+# sources, so committing it would be committing a second original.
+APIDOC.md
+
+# Device images the probe builds leave beside the source.
+*.elf
+
+# novo.lock is committed: a locked build resolves the same closure twice
+# and does it offline once the cache is warm.

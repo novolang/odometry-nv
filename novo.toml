@@ -1,0 +1,32 @@
+[package]
+name        = "odometry-nv"
+version     = "0.1.0"
+description = "Differential-drive kinematics in single precision with no allocation and no effects: encoder ticks to wheel travel, with the counter wrap handled; pose integration along the exact circular arc; the twist estimate; and a velocity command, linear and angular, to wheel speeds with limits that keep the path's curvature.  Parameters are the wheel radius, the track width and the ticks per revolution."
+license     = "Apache-2.0"
+
+stability   = "experimental"
+
+# `core`: kinematics is arithmetic over numbers the caller already
+# holds.  The encoder counts arrive as integers and the elapsed seconds
+# as an argument; nothing is read, nothing is written and no function
+# declares an effect.  `tests/embedded_probe.nv` builds the package for
+# a Cortex-M, so the claim that nothing here allocates is a link.
+layer       = "core"
+
+category    = "embedded"
+
+tags        = ["odometry", "differential-drive", "kinematics", "encoder", "robot", "ros", "cmd-vel", "fp32", "embedded", "no-alloc"]
+repository  = "https://github.com/novolang/odometry-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.26.1"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Differential-drive odometry for a core with no heap"
+
+[dependencies]
+# None.  The pose integration needs a sine and a cosine, which the
+# embedded tier refuses to take from libm, so `odotrig` carries the two
+# in single precision.

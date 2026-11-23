@@ -1,0 +1,476 @@
+// odometry — the kinematics of a two-wheeled differential drive.
+//
+// THE ROBOT.  Two wheels on one axle, each driven by its own motor and
+// read by its own encoder.  Driving them at different speeds turns the
+// robot: equal speeds go straight, opposite speeds spin on the spot, and
+// any other pair follows a circle.  Three numbers describe the machine:
+// the radius of a wheel, the distance between the two contact points
+// (the track width), and how many encoder ticks make one turn of a
+// wheel.
+//
+// THE POSE is where the robot is, `(x, y)` in metres, and which way it
+// faces, `theta` in radians counted anticlockwise from the x axis and
+// kept in `(-pi, pi]`.  THE TWIST is how it is moving: `v`, the speed of
+// the midpoint of the axle along its heading in metres per second, and
+// `w`, the turn rate in radians per second.  A velocity command in
+// ROS 2's `cmd_vel` is a twist; odometry's own answer, `nav_msgs/
+// Odometry`, is a pose and a twist.
+//
+// THE PATH BETWEEN TWO SAMPLES IS AN ARC.  A wheel that moved `dl` and a
+// wheel that moved `dr` metres since the last sample did so on a circle
+// when their speeds were steady: the midpoint travelled `d = (dl + dr) /
+// 2`, the heading changed by `dtheta = (dr - dl) / track`, and the
+// midpoint moved along a chord of that arc, of length `d * sinc(dtheta /
+// 2)` in the direction `theta + dtheta / 2`.  That is exact for a
+// circle, and the straight-line step it replaces, `d` along `theta`, is
+// wrong by a part in `dtheta` squared over twenty-four.  When `dtheta` is
+// small the sinc is its series, which avoids dividing a small number by
+// a small number in binary32.
+//
+// THE COUNTERS WRAP.  An encoder counter is a fixed number of bits; it
+// counts up past its largest value and starts again at zero.  The step
+// between two readings is taken modulo the counter's range and read as
+// signed, so a wheel that crosses the wrap shows its true small step
+// and not a jump of the whole range.  That is right as long as a wheel
+// moves less than half the range between two readings.
+//
+// Nothing here reads a clock or a sensor.  The counts and the seconds
+// since the last sample are arguments, so the same samples give the same
+// pose on a laptop and on a device.
+
+use odotrig
+
+// The three numbers that describe the machine.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let p = odometry.params(0.033, 0.16, 1440)
+//     println("${p.ticks_per_rev}")   // 1440
+// ```
+pub @value
+struct Params
+    // The radius of a wheel, in metres.
+    wheel_radius: fp32
+    // The distance between the two wheels' contact points, in metres.
+    track_width: fp32
+    // The encoder ticks in one turn of a wheel.
+    ticks_per_rev: Int
+
+// Where the robot is.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let p = odometry.pose(1.0, 2.0, 0.5)
+//     println("${p.x} ${p.y}")   // 1 2
+// ```
+pub @value
+struct Pose
+    // Metres along the x axis.
+    x: fp32
+    // Metres along the y axis.
+    y: fp32
+    // The heading in radians, in `(-pi, pi]`.
+    theta: fp32
+
+// How the robot is moving.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let t = odometry.twist(0.2, 0.5)
+//     println("${t.v} ${t.w}")   // 0.2 0.5
+// ```
+pub @value
+struct Twist
+    // The speed along the heading, in metres per second.
+    v: fp32
+    // The turn rate, in radians per second, positive anticlockwise.
+    w: fp32
+
+// The speed of each wheel's rotation, in radians per second, positive
+// when the wheel drives the robot forward.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let w = odometry.Wheels { left: 1.0, right: 2.0 }
+//     println("${w.left} ${w.right}")   // 1 2
+// ```
+pub @value
+struct Wheels
+    // The left wheel.
+    left: fp32
+    // The right wheel.
+    right: fp32
+
+// What a command may not exceed.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let l = odometry.limits(0.5, 2.0, 20.0)
+//     println("${l.max_linear}")   // 0.5
+// ```
+pub @value
+struct Limits
+    // The largest speed, in metres per second, either way.
+    max_linear: fp32
+    // The largest turn rate, in radians per second, either way.
+    max_angular: fp32
+    // The largest wheel rotation speed, in radians per second, either way.
+    max_wheel: fp32
+
+// The robot's own state: the pose and the twist it estimates, and the
+// counter readings the next sample is measured from.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let o = odometry.odometer(odometry.params(0.033, 0.16, 1440), 16)
+//     println("${o.started}")   // false
+// ```
+pub @value
+struct Odometer
+    // The machine.
+    params: Params
+    // The pose integrated so far.
+    pose: Pose
+    // The twist of the last sample.
+    twist: Twist
+    // The reading of the left counter at the last sample.
+    left_count: Int
+    // The reading of the right counter at the last sample.
+    right_count: Int
+    // The range of the counters, `2^bits`, or zero for a counter that
+    // does not wrap.
+    modulus: Int
+    // Whether a first sample has set the baseline.
+    started: Bool
+
+// ── Construction ─────────────────────────────────────────────────────
+
+// The machine's three numbers.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     println("${odometry.params(0.033, 0.16, 1440).track_width}")   // 0.16
+// ```
+pub fn params(wheel_radius: fp32, track_width: fp32, ticks_per_rev: Int) -> Params []
+    Params { wheel_radius: wheel_radius, track_width: track_width, ticks_per_rev: ticks_per_rev }
+
+// A pose.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     println("${odometry.pose(1.0, 2.0, 0.5).theta}")   // 0.5
+// ```
+pub fn pose(x: fp32, y: fp32, theta: fp32) -> Pose []
+    Pose { x: x, y: y, theta: theta }
+
+// A twist.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     println("${odometry.twist(0.2, 0.5).w}")   // 0.5
+// ```
+pub fn twist(v: fp32, w: fp32) -> Twist []
+    Twist { v: v, w: w }
+
+// The limits of a command.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     println("${odometry.limits(0.5, 2.0, 20.0).max_wheel}")   // 20
+// ```
+pub fn limits(max_linear: fp32, max_angular: fp32, max_wheel: fp32) -> Limits []
+    Limits { max_linear: max_linear, max_angular: max_angular, max_wheel: max_wheel }
+
+// An odometer at the origin, facing along x, for counters of `bits` bits;
+// zero bits is a counter that does not wrap.  The first sample sets the
+// baseline and moves nothing.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let o = odometry.odometer(odometry.params(0.033, 0.16, 1440), 16)
+//     println("${o.modulus}")   // 65536
+// ```
+pub fn odometer(p: Params, bits: Int) -> Odometer []
+    var modulus = 0
+    if bits > 0
+        modulus = 1 << bits
+    Odometer { params: p,
+        pose: Pose { x: 0.0, y: 0.0, theta: 0.0 },
+        twist: Twist { v: 0.0, w: 0.0 },
+        left_count: 0,
+        right_count: 0,
+        modulus: modulus,
+        started: false }
+
+// The odometer started at a given pose.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let o = odometry.odometer(odometry.params(0.033, 0.16, 1440), 16)
+//     println("${odometry.with_pose(o, odometry.pose(1.0, 2.0, 0.0)).pose.y}")   // 2
+// ```
+pub fn with_pose(o: Odometer, p: Pose) -> Odometer []
+    Odometer { params: o.params,
+        pose: p,
+        twist: o.twist,
+        left_count: o.left_count,
+        right_count: o.right_count,
+        modulus: o.modulus,
+        started: o.started }
+
+// ── Ticks to travel ──────────────────────────────────────────────────
+
+// The distance a wheel rolls in `ticks` encoder ticks, in metres:
+// `ticks * 2 pi r / ticks_per_rev`.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let d = odometry.distance(odometry.params(0.05, 0.2, 1000), 1000)
+//     println("${d > 0.31415 and d < 0.31416}")   // true
+// ```
+pub fn distance(p: Params, ticks: Int) -> fp32 []
+    let two_pi: fp32 = 6.283185307179586
+    let per_tick = two_pi * p.wheel_radius / p.ticks_per_rev as fp32
+    ticks as fp32 * per_tick
+
+// The number of ticks a wheel counts rolling `metres`, rounded to the
+// nearest whole tick.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     println("${odometry.ticks_for(odometry.params(0.05, 0.2, 1000), 0.31415927)}")   // 1000
+// ```
+pub fn ticks_for(p: Params, metres: fp32) -> Int []
+    let two_pi: fp32 = 6.283185307179586
+    let zero: fp32 = 0.0
+    let half: fp32 = 0.5
+    let t = metres * p.ticks_per_rev as fp32 / (two_pi * p.wheel_radius)
+    if t < zero
+        return (t - half) as Int
+    (t + half) as Int
+
+// The change of a counter between two readings, as a signed number of
+// ticks.  With `modulus` the counter's range the difference is taken
+// modulo that range and read in `[-modulus/2, modulus/2)`, so a wrap is
+// a small step; a `modulus` of zero is a counter that does not wrap.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     println("${odometry.tick_delta(65530, 4, 65536)}")   // 10
+// ```
+pub fn tick_delta(previous: Int, now: Int, modulus: Int) -> Int []
+    let raw = now - previous
+    if modulus <= 0
+        return raw
+    let half = modulus / 2
+    var d = raw % modulus
+    if d >= half
+        d = d - modulus
+    if d < -half
+        d = d + modulus
+    d
+
+// ── The arc ──────────────────────────────────────────────────────────
+
+// `sin(u) / u`, with the series for a small `u`.
+fn sinc(u: fp32) -> fp32 []
+    let zero: fp32 = 0.0
+    let one: fp32 = 1.0
+    let a = if u < zero
+        -u
+    else
+        u
+    let limit: fp32 = 0.25
+    if a < limit
+        let u2 = u * u
+        let c1: fp32 = 0.16666666666666666
+        let c2: fp32 = 0.008333333333333333
+        let c3: fp32 = 0.0001984126984126984
+        return one - u2 * (c1 - u2 * (c2 - u2 * c3))
+    odotrig.sin(u) / u
+
+// The pose after the left wheel rolled `dl` metres and the right wheel
+// `dr`, along the circular arc between them.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     // Both wheels 0.5 m forward: straight ahead by half a metre.
+//     let p = odometry.advance(odometry.pose(0.0, 0.0, 0.0), 0.5, 0.5, 0.16)
+//     println("${p.x} ${p.y}")   // 0.5 0
+// ```
+pub fn advance(from: Pose, dl: fp32, dr: fp32, track_width: fp32) -> Pose []
+    let two: fp32 = 2.0
+    let d = (dl + dr) / two
+    let dtheta = (dr - dl) / track_width
+    let half_turn = dtheta / two
+    let chord = d * sinc(half_turn)
+    let heading = from.theta + half_turn
+    Pose { x: from.x + chord * odotrig.cos(heading),
+        y: from.y + chord * odotrig.sin(heading),
+        theta: odotrig.wrap_pi(from.theta + dtheta) }
+
+// The twist that took two wheels `dl` and `dr` metres in `dt` seconds;
+// zero when `dt` is not positive.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let t = odometry.twist_of(0.01, 0.03, 0.1, 0.2)
+//     println("${t.v > 0.1999 and t.v < 0.2001} ${t.w > 0.9999 and t.w < 1.0001}")   // true true
+// ```
+pub fn twist_of(dl: fp32, dr: fp32, dt: fp32, track_width: fp32) -> Twist []
+    let zero: fp32 = 0.0
+    let two: fp32 = 2.0
+    if dt <= zero
+        return Twist { v: zero, w: zero }
+    Twist { v: (dl + dr) / (two * dt), w: (dr - dl) / (track_width * dt) }
+
+// ── The sample ───────────────────────────────────────────────────────
+
+// The odometer after a sample of both counters taken `dt` seconds after
+// the last.  The first sample sets the baseline and moves nothing; each
+// later one moves the pose along the arc of the two wheels' travel and
+// sets the twist.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     var o = odometry.odometer(odometry.params(0.05, 0.2, 1000), 16)
+//     o = odometry.update(o, 0, 0, 0.1)
+//     o = odometry.update(o, 1000, 1000, 0.1)
+//     println("${o.pose.x > 0.31415 and o.pose.x < 0.31416}")   // true
+// ```
+pub fn update(o: Odometer, left_count: Int, right_count: Int, dt: fp32) -> Odometer []
+    let zero: fp32 = 0.0
+    if not o.started
+        return Odometer { params: o.params,
+            pose: o.pose,
+            twist: Twist { v: zero, w: zero },
+            left_count: left_count,
+            right_count: right_count,
+            modulus: o.modulus,
+            started: true }
+    let dl = distance(o.params, tick_delta(o.left_count, left_count, o.modulus))
+    let dr = distance(o.params, tick_delta(o.right_count, right_count, o.modulus))
+    let moved = advance(o.pose, dl, dr, o.params.track_width)
+    let rate = twist_of(dl, dr, dt, o.params.track_width)
+    Odometer { params: o.params,
+        pose: moved,
+        twist: rate,
+        left_count: left_count,
+        right_count: right_count,
+        modulus: o.modulus,
+        started: true }
+
+// ── The command ──────────────────────────────────────────────────────
+
+// `x` held within `[-limit, limit]`.
+fn clamp(x: fp32, limit: fp32) -> fp32 []
+    if x > limit
+        return limit
+    if x < -limit
+        return -limit
+    x
+
+// The wheel speeds that drive the twist `cmd`: each wheel's rotation, in
+// radians per second, is `(v -/+ w * track / 2) / radius`.
+//
+// The command is held to the limits first: the speed to `max_linear` and
+// the turn rate to `max_angular`.  If a wheel would still turn faster
+// than `max_wheel`, both wheels are scaled by the same factor, which
+// slows the robot and keeps the curve it was asked to follow.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let w = odometry.wheel_speeds(odometry.params(0.05, 0.2, 1000), odometry.twist(0.5, 0.0), odometry.limits(1.0, 2.0, 100.0))
+//     println("${w.left} ${w.right}")   // 10 10
+// ```
+pub fn wheel_speeds(p: Params, cmd: Twist, lim: Limits) -> Wheels []
+    let two: fp32 = 2.0
+    let v = clamp(cmd.v, lim.max_linear)
+    let w = clamp(cmd.w, lim.max_angular)
+    let half = w * p.track_width / two
+    let left = (v - half) / p.wheel_radius
+    let right = (v + half) / p.wheel_radius
+    let big = if left < -left
+        -left
+    else
+        left
+    let big_r = if right < -right
+        -right
+    else
+        right
+    let peak = if big > big_r
+        big
+    else
+        big_r
+    if peak > lim.max_wheel
+        let k = lim.max_wheel / peak
+        return Wheels { left: left * k, right: right * k }
+    Wheels { left: left, right: right }
+
+// The wheel speeds in encoder ticks per second, for a motor controller
+// that closes its loop on the encoder.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let w = odometry.ticks_per_second(odometry.params(0.05, 0.2, 1000), odometry.Wheels { left: 6.2831855, right: 0.0 })
+//     println("${w.left > 999.99 and w.left < 1000.01}")   // true
+// ```
+pub fn ticks_per_second(p: Params, w: Wheels) -> Wheels []
+    let two_pi: fp32 = 6.283185307179586
+    let k = p.ticks_per_rev as fp32 / two_pi
+    Wheels { left: w.left * k, right: w.right * k }
+
+// The twist the two wheel speeds produce: the inverse of `wheel_speeds`
+// before any limit.
+//
+// ```novo
+// use odometry
+//
+// fn main() [io]
+//     let t = odometry.twist_of_wheels(odometry.params(0.05, 0.2, 1000), odometry.Wheels { left: 10.0, right: 10.0 })
+//     println("${t.v} ${t.w}")   // 0.5 0
+// ```
+pub fn twist_of_wheels(p: Params, w: Wheels) -> Twist []
+    let two: fp32 = 2.0
+    Twist { v: (w.left + w.right) * p.wheel_radius / two,
+        w: (w.right - w.left) * p.wheel_radius / p.track_width }

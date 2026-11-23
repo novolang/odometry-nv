@@ -1,0 +1,274 @@
+// odometry_edge_tests.nv — closed-form paths, the counter wrap, the
+// limits, and the sine and cosine that stand in for libm.
+//
+// The vector tests compare a long irregular drive with a reference.
+// These are the paths whose answer is known without one: a straight
+// line, a spin on the spot, and a circle that closes on itself.
+
+use std.test
+use odometry
+use odotrig
+
+fn machine() -> Params
+    // A wheel of 4 cm radius and 1000 ticks a turn is 0.00025133 m a tick,
+    // and a track of 0.3 m.
+    odometry.params(0.04, 0.3, 1000)
+
+fn per_tick() -> Float
+    2.0 * math.pi * 0.04 / 1000.0
+
+// ── Ticks to travel ──────────────────────────────────────────────────
+
+@test
+fn test_a_thousand_ticks_is_one_circumference_and_the_count_reads_back()
+    test.assert_approx(odometry.distance(machine(), 1000) as Float, 2.0 * math.pi * 0.04, 0.000001)
+    test.assert_approx(odometry.distance(machine(), -500) as Float, 0.0 - math.pi * 0.04, 0.000001)
+    test.assert_eq(odometry.ticks_for(machine(), odometry.distance(machine(), 777)), 777)
+    test.assert_eq(odometry.ticks_for(machine(), odometry.distance(machine(), -777)), -777)
+
+@test
+fn test_the_counter_step_is_the_small_signed_difference_modulo_the_range()
+    test.assert_eq(odometry.tick_delta(100, 160, 65536), 60)
+    test.assert_eq(odometry.tick_delta(160, 100, 65536), -60)
+    test.assert_eq(odometry.tick_delta(65530, 4, 65536), 10)
+    test.assert_eq(odometry.tick_delta(4, 65530, 65536), -10)
+    // Half the range either way is read as a step backward.
+    test.assert_eq(odometry.tick_delta(0, 32768, 65536), -32768)
+    test.assert_eq(odometry.tick_delta(0, 32767, 65536), 32767)
+    // A counter that does not wrap is a plain difference.
+    test.assert_eq(odometry.tick_delta(100, 5000000, 0), 4999900)
+    test.assert_eq(odometry.tick_delta(5000000, 100, 0), -4999900)
+
+// ── The paths ────────────────────────────────────────────────────────
+
+@test
+fn test_both_wheels_equal_is_a_straight_line_along_the_heading()
+    let start = odometry.pose(1.0, 2.0, 1.0471976)
+    let p = odometry.advance(start, 0.5, 0.5, 0.3)
+    test.assert_approx(p.x as Float, 1.0 + 0.5 * math.cos(1.0471976), 0.000001)
+    test.assert_approx(p.y as Float, 2.0 + 0.5 * math.sin(1.0471976), 0.000001)
+    test.assert_approx(p.theta as Float, 1.0471976, 0.000001)
+
+@test
+fn test_a_straight_drive_by_ticks_covers_ticks_times_the_wheel_travel_per_tick()
+    var o = odometry.odometer(machine(), 0)
+    o = odometry.update(o, 0, 0, 0.1)
+    o = odometry.update(o, 4000, 4000, 0.1)
+    test.assert_approx(o.pose.x as Float, 4000.0 * per_tick(), 0.00001)
+    test.assert_eq(o.pose.y, 0.0)
+    test.assert_eq(o.pose.theta, 0.0)
+    test.assert_approx(o.twist.v as Float, 4000.0 * per_tick() / 0.1, 0.0001)
+    test.assert_eq(o.twist.w, 0.0)
+
+@test
+fn test_opposite_wheels_spin_the_robot_on_the_spot()
+    // Each wheel travels s in opposite directions: the heading changes by
+    // 2 s / track, and the midpoint does not move.
+    let s = 0.1
+    let p = odometry.advance(odometry.pose(3.0, -1.0, 0.0), (0.0 - s) as fp32, s as fp32, 0.3)
+    test.assert_approx(p.x as Float, 3.0, 0.000001)
+    test.assert_approx(p.y as Float, -1.0, 0.000001)
+    test.assert_approx(p.theta as Float, 2.0 * s / 0.3, 0.000001)
+
+@test
+fn test_a_full_spin_comes_back_to_the_heading_it_left()
+    // 2 pi * track / 2 = 0.4712389 m of travel on each wheel for a turn.
+    let s = (math.pi * 0.3) as fp32
+    let p = odometry.advance(odometry.pose(0.0, 0.0, 0.5), 0.0 - s, s, 0.3)
+    test.assert_approx(p.theta as Float, 0.5, 0.00001)
+
+@test
+fn test_the_heading_stays_in_one_turn_across_the_branch_cut()
+    let p = odometry.advance(odometry.pose(0.0, 0.0, 3.0), -0.01, 0.01, 0.3)
+    // 3.0 + 0.0667 = 3.0667 is still under pi.
+    test.assert_approx(p.theta as Float, 3.0 + 0.02 / 0.3, 0.00001)
+    let q = odometry.advance(odometry.pose(0.0, 0.0, 3.1), -0.05, 0.05, 0.3)
+    // 3.1 + 0.3333 wraps to 3.4333 - 2 pi.
+    test.assert_approx(q.theta as Float, 3.1 + 0.1 / 0.3 - 2.0 * math.pi, 0.00001)
+
+@test
+fn test_a_circle_of_a_metre_radius_closes_on_itself_after_one_lap()
+    // The midpoint follows a circle of radius 1 about (0, 1).  The wheels
+    // are 0.15 m either side, so the outer wheel's circle has radius 1.15.
+    let steps = 360
+    let dphi = 2.0 * math.pi / 360.0
+    let dl = ((1.0 - 0.15) * dphi) as fp32
+    let dr = ((1.0 + 0.15) * dphi) as fp32
+    var p = odometry.pose(0.0, 0.0, 0.0)
+    var halfway = p
+    for i in 0..steps
+        p = odometry.advance(p, dl, dr, 0.3)
+        if i == 179
+            halfway = p
+    test.assert_approx(halfway.x as Float, 0.0, 0.0005)
+    test.assert_approx(halfway.y as Float, 2.0, 0.0005)
+    test.assert_approx(p.x as Float, 0.0, 0.001)
+    test.assert_approx(p.y as Float, 0.0, 0.001)
+    test.assert_approx(p.theta as Float, 0.0, 0.001)
+
+@test
+fn test_one_coarse_step_along_a_circle_lands_on_the_circle_where_a_straight_step_would_not()
+    // A quarter lap of the circle in one step: the exact arc ends at
+    // (1, 1) facing north; a straight step along the old heading would end
+    // at (1.5708, 0).
+    let quarter = math.pi / 2.0
+    let dl = ((1.0 - 0.15) * quarter) as fp32
+    let dr = ((1.0 + 0.15) * quarter) as fp32
+    let p = odometry.advance(odometry.pose(0.0, 0.0, 0.0), dl, dr, 0.3)
+    test.assert_approx(p.x as Float, 1.0, 0.00001)
+    test.assert_approx(p.y as Float, 1.0, 0.00001)
+    test.assert_approx(p.theta as Float, quarter, 0.00001)
+
+// ── The twist and the sample ─────────────────────────────────────────
+
+@test
+fn test_the_twist_of_a_step_is_speed_and_turn_rate_and_a_stopped_clock_gives_none()
+    let t = odometry.twist_of(0.01, 0.03, 0.1, 0.2)
+    test.assert_approx(t.v as Float, 0.2, 0.000001)
+    test.assert_approx(t.w as Float, 1.0, 0.000001)
+    let z = odometry.twist_of(0.01, 0.03, 0.0, 0.2)
+    test.assert_eq(z.v, 0.0)
+    test.assert_eq(z.w, 0.0)
+    let n = odometry.twist_of(0.01, 0.03, -1.0, 0.2)
+    test.assert_eq(n.v, 0.0)
+
+@test
+fn test_the_first_sample_sets_the_baseline_and_moves_nothing()
+    var o = odometry.with_pose(odometry.odometer(machine(), 16), odometry.pose(1.0, 2.0, 0.5))
+    test.assert(not o.started)
+    o = odometry.update(o, 40000, 123, 0.1)
+    test.assert(o.started)
+    test.assert_eq(o.pose.x, 1.0)
+    test.assert_eq(o.pose.y, 2.0)
+    test.assert_eq(o.twist.v, 0.0)
+    test.assert_eq(o.left_count, 40000)
+
+@test
+fn test_a_drive_that_crosses_the_wrap_goes_the_same_distance_as_one_that_does_not()
+    var wrapped = odometry.odometer(machine(), 16)
+    wrapped = odometry.update(wrapped, 65000, 65000, 0.1)
+    wrapped = odometry.update(wrapped, 464, 464, 0.1)
+    var plain = odometry.odometer(machine(), 16)
+    plain = odometry.update(plain, 100, 100, 0.1)
+    plain = odometry.update(plain, 1100, 1100, 0.1)
+    test.assert_approx(wrapped.pose.x as Float, plain.pose.x as Float, 0.000001)
+
+// ── The command ──────────────────────────────────────────────────────
+
+@test
+fn test_a_straight_command_drives_both_wheels_at_speed_over_radius()
+    let w = odometry.wheel_speeds(machine(), odometry.twist(0.4, 0.0), odometry.limits(1.0, 3.0, 100.0))
+    test.assert_approx(w.left as Float, 10.0, 0.00001)
+    test.assert_approx(w.right as Float, 10.0, 0.00001)
+
+@test
+fn test_a_turn_command_drives_the_wheels_apart_by_the_turn_rate_times_the_track()
+    let w = odometry.wheel_speeds(machine(), odometry.twist(0.0, 2.0), odometry.limits(1.0, 3.0, 100.0))
+    // v = 0, w = 2: each wheel at 2 * 0.3 / 2 = 0.3 m/s, opposite ways.
+    test.assert_approx(w.left as Float, -7.5, 0.00001)
+    test.assert_approx(w.right as Float, 7.5, 0.00001)
+
+@test
+fn test_the_command_is_held_to_the_linear_and_angular_limits_in_both_directions()
+    let lim = odometry.limits(0.5, 1.0, 1000.0)
+    let fast = odometry.wheel_speeds(machine(), odometry.twist(9.0, 0.0), lim)
+    test.assert_approx(fast.left as Float, 12.5, 0.00001)
+    let back = odometry.wheel_speeds(machine(), odometry.twist(-9.0, 0.0), lim)
+    test.assert_approx(back.left as Float, -12.5, 0.00001)
+    let spin = odometry.wheel_speeds(machine(), odometry.twist(0.0, 9.0), lim)
+    test.assert_approx(spin.right as Float, 3.75, 0.00001)
+    let spin_back = odometry.wheel_speeds(machine(), odometry.twist(0.0, -9.0), lim)
+    test.assert_approx(spin_back.right as Float, -3.75, 0.00001)
+
+@test
+fn test_a_wheel_over_its_limit_scales_both_wheels_and_keeps_the_curve()
+    // v = 0.5, w = 2: the wheels want 5 and 20 rad/s; with a limit of 10
+    // the faster is held there and the slower is halved with it.
+    let lim = odometry.limits(1.0, 3.0, 10.0)
+    let w = odometry.wheel_speeds(machine(), odometry.twist(0.5, 2.0), lim)
+    test.assert_approx(w.right as Float, 10.0, 0.00001)
+    test.assert_approx(w.left as Float, 2.5, 0.00001)
+    // The ratio of the speeds, which sets the curvature, is the same.
+    test.assert_approx((w.right / w.left) as Float, 4.0, 0.0001)
+    // And over its limit on the other side.
+    let flipped = odometry.wheel_speeds(machine(), odometry.twist(0.5, -2.0), lim)
+    test.assert_approx(flipped.left as Float, 10.0, 0.00001)
+
+@test
+fn test_the_wheel_speeds_convert_to_ticks_and_back_to_the_twist_that_made_them()
+    let cmd = odometry.twist(0.3, 1.2)
+    let w = odometry.wheel_speeds(machine(), cmd, odometry.limits(1.0, 3.0, 100.0))
+    let back = odometry.twist_of_wheels(machine(), w)
+    test.assert_approx(back.v as Float, 0.3, 0.000001)
+    test.assert_approx(back.w as Float, 1.2, 0.000001)
+    let t = odometry.ticks_per_second(machine(), odometry.Wheels { left: 6.2831855, right: -6.2831855 })
+    test.assert_approx(t.left as Float, 1000.0, 0.001)
+    test.assert_approx(t.right as Float, -1000.0, 0.001)
+
+// ── odotrig against the host's libm ──────────────────────────────────
+
+@test
+fn test_the_sine_and_cosine_agree_with_libm_and_the_wrap_lands_in_one_turn()
+    var worst_sin = 0.0
+    var worst_cos = 0.0
+    for i in 0..2000
+        let x = (i as Float - 1000.0) * 0.05
+        let x32 = x as fp32
+        worst_sin = math.max(worst_sin, math.abs(odotrig.sin(x32) as Float - math.sin(x32 as Float)))
+        worst_cos = math.max(worst_cos, math.abs(odotrig.cos(x32) as Float - math.cos(x32 as Float)))
+        let wrapped = odotrig.wrap_pi(x32) as Float
+        test.assert(wrapped > -3.1415928 and wrapped <= 3.1415928)
+        test.assert_approx(math.sin(wrapped), math.sin(x32 as Float), 0.00002)
+    test.assert(worst_sin < 0.0000003)
+    test.assert(worst_cos < 0.0000003)
+
+@test
+fn test_the_wrap_keeps_pi_and_sends_minus_pi_to_pi()
+    test.assert_approx(odotrig.wrap_pi(3.1415927) as Float, 3.1415927, 0.000001)
+    test.assert_approx(odotrig.wrap_pi(-3.1415927) as Float, 3.1415927, 0.000001)
+    test.assert_approx(odotrig.wrap_pi(0.0) as Float, 0.0, 0.0)
+    test.assert_approx(odotrig.wrap_pi(7.0) as Float, 7.0 - 2.0 * math.pi, 0.000001)
+    test.assert_approx(odotrig.wrap_pi(-7.0) as Float, 2.0 * math.pi - 7.0, 0.000001)
+
+@test
+fn test_the_series_branch_of_the_chord_agrees_with_the_closed_form_at_its_edge()
+    // A turn of 0.48 rad over a step of 100 m: half the turn is 0.24, the
+    // last value the series serves.  The chord is d sin(u) / u.
+    let dtheta = 0.48
+    let d = 100.0
+    let track = 0.3
+    let dl = (d - dtheta * track / 2.0) as fp32
+    let dr = (d + dtheta * track / 2.0) as fp32
+    let p = odometry.advance(odometry.pose(0.0, 0.0, 0.0), dl, dr, 0.3)
+    let chord = d * math.sin(0.24) / 0.24
+    test.assert_approx(p.x as Float, chord * math.cos(0.24), 0.0005)
+    test.assert_approx(p.y as Float, chord * math.sin(0.24), 0.0005)
+
+@test
+fn test_a_reading_beyond_the_counter_range_is_taken_modulo_the_range()
+    test.assert_eq(odometry.tick_delta(0, 140000, 65536), 8928)
+    test.assert_eq(odometry.tick_delta(140000, 0, 65536), -8928)
+
+@test
+fn test_turning_right_mirrors_turning_left()
+    let left = odometry.advance(odometry.pose(0.0, 0.0, 0.0), 0.1, 0.2, 0.3)
+    let right = odometry.advance(odometry.pose(0.0, 0.0, 0.0), 0.2, 0.1, 0.3)
+    test.assert_approx(right.x as Float, left.x as Float, 0.000001)
+    test.assert_approx(right.y as Float, 0.0 - left.y as Float, 0.000001)
+    test.assert_approx(right.theta as Float, 0.0 - left.theta as Float, 0.000001)
+    // Beyond the series: a quarter turn the other way lands at (1, -1).
+    let quarter = math.pi / 2.0
+    let big = odometry.advance(odometry.pose(0.0, 0.0, 0.0),
+        ((1.0 + 0.15) * quarter) as fp32,
+        ((1.0 - 0.15) * quarter) as fp32,
+        0.3)
+    test.assert_approx(big.x as Float, 1.0, 0.00001)
+    test.assert_approx(big.y as Float, -1.0, 0.00001)
+
+@test
+fn test_an_angle_the_rounding_leaves_just_past_pi_is_wrapped_down()
+    // Minus three pi in binary32 reduces to a hair above pi, which the
+    // wrap sends down by a turn.
+    let w = odotrig.wrap_pi(-9.424778) as Float
+    test.assert(w > -3.1415927 and w <= 3.1415927)
+    test.assert_approx(math.abs(w), math.pi, 0.00001)
