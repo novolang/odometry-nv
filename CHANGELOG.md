@@ -5,6 +5,29 @@ All notable changes to odometry-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.2.0 — 2026-11-24
+
+### Breaking
+
+- **`odotrig.sin` and `odotrig.cos` move to the package
+  [fpmath-nv](https://novo-lang.org/packages/fpmath-nv)** as `fpmath.sin`
+  and `fpmath.cos`; this package depends on it.  `odotrig.wrap_pi` stays.
+  *Migration:* a program that called `odotrig.sin(x)` or `odotrig.cos(x)`
+  adds `fpmath-nv = "^0.1.0"` to its `[dependencies]` and calls
+  `fpmath.sin(x)` and `fpmath.cos(x)`.
+- The tests of the accuracy of the sine and the cosine move with them, to
+  `fpmath-nv/tests/fpmath_tests.nv`.
+
+### Changed
+
+- The probe `tests/embedded_probe.nv` is the same program; its image is the
+  size it was or smaller.  Built as the main of a program that depends on the
+  package, it is 56 bytes smaller on `nrf52840-dk` (12,164 bytes before, 12,108
+  after) and on `nrf52-qemu` (12,884 and 12,828).  `tests/device_build.sh`
+  stages the modules as the `src/` of its own scratch package and reads 96
+  bytes more (12,044 and 12,140): the trap sites of the sine and the cosine
+  name the file of the dependency, whose path is longer than `./src/fpmath.nv`.
+
 ## 0.1.0 — 2026-11-23
 
 ### Added

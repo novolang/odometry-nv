@@ -20,6 +20,7 @@
 
 use odometry
 use odotrig
+use fpmath
 
 @tier(embedded)
 fn near(a: fp32, b: fp32, tol: fp32) -> Bool
@@ -84,7 +85,7 @@ fn score() -> Int
     let t = odometry.ticks_per_second(p, w)
     if t.right > t.left
         n = n + 1
-    if near(odotrig.sin(0.5) * odotrig.sin(0.5) + odotrig.cos(0.5) * odotrig.cos(0.5), 1.0, tol)
+    if near(fpmath.sin(0.5) * fpmath.sin(0.5) + fpmath.cos(0.5) * fpmath.cos(0.5), 1.0, tol)
         n = n + 1
     if near(odotrig.wrap_pi(7.0), 0.7168147, tol)
         n = n + 1

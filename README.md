@@ -101,7 +101,7 @@ Build and test with `novo pkg build` and `novo test`.
 | Module | Contents |
 | --- | --- |
 | `odometry` | The types `Params`, `Pose`, `Twist`, `Wheels`, `Limits` and `Odometer`; ticks to distance and back, the counter step, the arc, the twist of a step, the sample, and the command to wheel speeds with limits. |
-| `odotrig` | Single-precision `sin` and `cos`, and the wrap of an angle into `(-pi, pi]`, written without libm. |
+| `odotrig` | The wrap of an angle into `(-pi, pi]`, in single precision. The sine and the cosine of the pose integration are [fpmath-nv](https://novo-lang.org/packages/fpmath-nv)'s `fpmath`. |
 
 ## How to choose an entry point
 
@@ -163,12 +163,12 @@ division is `sin(u) / u`, which is a series below `|u| = 0.25` and a plain
 division above, and it agrees with the textbook arc to the last digit of the
 tests' tolerance.
 
-**The functions the embedded tier refuses are written out.** `@tier(embedded)`
-refuses `math.sin` and `math.cos` because they lower to calls into libm.
-`odotrig` is the Cephes single-precision routines, a reduction by quarter
-turns and a polynomial, within 3e-7 of libm over `|x| <= 100`. The same two
-functions are in [ahrs-nv](https://novo-lang.org/packages/ahrs-nv), and each
-package carries its own so that neither depends on the other.
+**The functions the embedded tier refuses come from fpmath-nv.**
+`@tier(embedded)` refuses `math.sin` and `math.cos` because they lower to
+calls into libm. [fpmath-nv](https://novo-lang.org/packages/fpmath-nv) holds
+the Cephes single-precision routines, a reduction by quarter turns and a
+polynomial, within 2e-7 of libm over `|x| <= 100`; `ahrs-nv` takes the same
+module.
 
 **There is no dependency on a filter.** The twist that `update` answers is
 what [kalman-nv](https://novo-lang.org/packages/kalman-nv) takes as a
@@ -227,7 +227,7 @@ whole package.
 ```bash
 novo test                                    # 25 tests
 novo test tests/odometry_vector_tests.nv     #  2: a drive across the wrap and the command table against a reference
-novo test tests/odometry_edge_tests.nv       # 23: closed-form paths, the wrap, the limits, odotrig against libm
+novo test tests/odometry_edge_tests.nv       # 23: closed-form paths, the wrap, the limits
 bash tests/device_build.sh                   # the device probe, sizes and a QEMU run
 ```
 

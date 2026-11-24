@@ -39,6 +39,7 @@
 // pose on a laptop and on a device.
 
 use odotrig
+use fpmath
 
 // The three numbers that describe the machine.
 //
@@ -317,7 +318,7 @@ fn sinc(u: fp32) -> fp32 []
         let c2: fp32 = 0.008333333333333333
         let c3: fp32 = 0.0001984126984126984
         return one - u2 * (c1 - u2 * (c2 - u2 * c3))
-    odotrig.sin(u) / u
+    fpmath.sin(u) / u
 
 // The pose after the left wheel rolled `dl` metres and the right wheel
 // `dr`, along the circular arc between them.
@@ -337,8 +338,8 @@ pub fn advance(from: Pose, dl: fp32, dr: fp32, track_width: fp32) -> Pose []
     let half_turn = dtheta / two
     let chord = d * sinc(half_turn)
     let heading = from.theta + half_turn
-    Pose { x: from.x + chord * odotrig.cos(heading),
-        y: from.y + chord * odotrig.sin(heading),
+    Pose { x: from.x + chord * fpmath.cos(heading),
+        y: from.y + chord * fpmath.sin(heading),
         theta: odotrig.wrap_pi(from.theta + dtheta) }
 
 // The twist that took two wheels `dl` and `dr` metres in `dt` seconds;

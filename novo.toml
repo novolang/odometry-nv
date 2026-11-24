@@ -1,6 +1,6 @@
 [package]
 name        = "odometry-nv"
-version     = "0.1.0"
+version     = "0.2.0"
 description = "Differential-drive kinematics in single precision with no allocation and no effects: encoder ticks to wheel travel, with the counter wrap handled; pose integration along the exact circular arc; the twist estimate; and a velocity command, linear and angular, to wheel speeds with limits that keep the path's curvature.  Parameters are the wheel radius, the track width and the ticks per revolution."
 license     = "Apache-2.0"
 
@@ -27,6 +27,7 @@ novo        = ">= 0.26.1"
 "README.md" = "Differential-drive odometry for a core with no heap"
 
 [dependencies]
-# None.  The pose integration needs a sine and a cosine, which the
-# embedded tier refuses to take from libm, so `odotrig` carries the two
-# in single precision.
+# The sine and the cosine of the pose integration, which the embedded tier
+# refuses to take from libm.  DEVELOPMENT ONLY: a path until fpmath-nv 0.1.0
+# is published; the line becomes fpmath-nv = "^0.1.0".
+fpmath-nv = { path = "../fpmath-nv" }

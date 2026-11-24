@@ -205,22 +205,16 @@ fn test_the_wheel_speeds_convert_to_ticks_and_back_to_the_twist_that_made_them()
     test.assert_approx(t.left as Float, 1000.0, 0.001)
     test.assert_approx(t.right as Float, -1000.0, 0.001)
 
-// ── odotrig against the host's libm ──────────────────────────────────
+// ── The wrap against the host's libm ─────────────────────────────────
 
 @test
-fn test_the_sine_and_cosine_agree_with_libm_and_the_wrap_lands_in_one_turn()
-    var worst_sin = 0.0
-    var worst_cos = 0.0
+fn test_the_wrap_lands_in_one_turn_and_keeps_the_sine()
     for i in 0..2000
         let x = (i as Float - 1000.0) * 0.05
         let x32 = x as fp32
-        worst_sin = math.max(worst_sin, math.abs(odotrig.sin(x32) as Float - math.sin(x32 as Float)))
-        worst_cos = math.max(worst_cos, math.abs(odotrig.cos(x32) as Float - math.cos(x32 as Float)))
         let wrapped = odotrig.wrap_pi(x32) as Float
         test.assert(wrapped > -3.1415928 and wrapped <= 3.1415928)
         test.assert_approx(math.sin(wrapped), math.sin(x32 as Float), 0.00002)
-    test.assert(worst_sin < 0.0000003)
-    test.assert(worst_cos < 0.0000003)
 
 @test
 fn test_the_wrap_keeps_pi_and_sends_minus_pi_to_pi()

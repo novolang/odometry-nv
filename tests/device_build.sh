@@ -24,7 +24,7 @@ stage() {  # stage <dir> <main file>
   mkdir -p "$1/src"
   cp "$PKG"/src/*.nv "$1/src/"
   cp "$2" "$1/src/probe.nv"
-  printf '[package]\nname = "embprobe"\nversion = "0.1.0"\nmain = "src/probe.nv"\n\n[dependencies]\n' > "$1/novo.toml"
+  printf '[package]\nname = "embprobe"\nversion = "0.1.0"\nmain = "src/probe.nv"\n\n[dependencies]\nfpmath-nv = { path = "%s" }\n' "$PKG/../fpmath-nv" > "$1/novo.toml"
 }
 
 # The baseline: the same board start-up, one UART write and the same
