@@ -28,6 +28,5 @@ novo        = ">= 0.26.1"
 
 [dependencies]
 # The sine and the cosine of the pose integration, which the embedded tier
-# refuses to take from libm.  DEVELOPMENT ONLY: a path until fpmath-nv 0.1.0
-# is published; the line becomes fpmath-nv = "^0.1.0".
-fpmath-nv = { path = "../fpmath-nv" }
+# refuses to take from libm.
+fpmath-nv = "^0.1.0"
